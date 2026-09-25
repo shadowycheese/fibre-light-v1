@@ -2,11 +2,19 @@
 #include <avr/interrupt.h>
 #include <util/delay.h>
 
-#define PIN_BIT 1 // Using PA1 (Bit 1 of PORTA)
+#define PIN_BIT 1
 #define NUM_LEDS 64
-#define BRIGHTNESS 32 // 0-255 color intensity
 
-uint8_t frameBuffer[64];
+uint8_t frame_buffer[16];
+
+uint8_t pallete[4][3];
+
+uint8_t set_pallete(uint8_t index, uint8_t r, uint8_t g, uint8_t b)
+{
+    pallete[index][0] = r;
+    pallete[index][1] = g;
+    pallete[index][2] = b;
+}
 
 uint8_t get_led_index(uint8_t x, uint8_t y)
 {
@@ -43,7 +51,7 @@ uint8_t get_led_index(uint8_t x, uint8_t y)
     return (matrix * 16) + localIndex;
 }
 
-void draw_pixel(uint8_t x, uint8_t y, uint8_t colorIndex)
+void draw_pixel(uint8_t x, uint8_t y, uint8_t palette_index)
 {
     if (x > 7 || y > 7)
     {
@@ -52,10 +60,15 @@ void draw_pixel(uint8_t x, uint8_t y, uint8_t colorIndex)
 
     uint8_t ledIndex = get_led_index(x, y);
 
-    frameBuffer[ledIndex] = colorIndex;
+    uint8_t byte = ledIndex >> 2;
+    uint8_t bit_pair_shift = (ledIndex % 4) * 2;
+
+    uint8_t mask = ~(3 << bit_pair_shift);
+    uint8_t value = (mask & frame_buffer[byte]) | (palette_index << bit_pair_shift);
+
+    frame_buffer[byte] = value;
 }
 
-// Highly precise inline bit-streamer tuned for 16MHz on modern tinyAVR hardware
 void bit_bang_byte(uint8_t b)
 {
     for (int8_t bit = 7; bit >= 0; bit--)
@@ -86,16 +99,20 @@ void draw_line(int8_t x0, int8_t y0, int8_t x1, int8_t y1, uint8_t colorIndex)
     for (;;)
     {
         draw_pixel(x0, y0, colorIndex);
+
         if (x0 == x1 && y0 == y1)
         {
             break;
         }
+
         e2 = 2 * err;
+
         if (e2 >= dy)
         {
             err += dy;
             x0 += sx;
         }
+
         if (e2 <= dx)
         {
             err += dx;
@@ -104,54 +121,61 @@ void draw_line(int8_t x0, int8_t y0, int8_t x1, int8_t y1, uint8_t colorIndex)
     }
 }
 
-void draw_rect(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t colorIndex)
+void draw_rect(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t colour)
 {
     for (uint8_t j = x; j < x + w; j++)
     {
-        draw_pixel(j, y, colorIndex);         // Top edge
-        draw_pixel(j, y + h - 1, colorIndex); // Bottom edge
+        draw_pixel(j, y, colour);
+        draw_pixel(j, y + h - 1, colour);
     }
     for (uint8_t i = y; i < y + h; i++)
     {
-        draw_pixel(x, i, colorIndex);         // Left edge
-        draw_pixel(x + w - 1, i, colorIndex); // Right edge
+        draw_pixel(x, i, colour);
+        draw_pixel(x + w - 1, i, colour);
     }
 }
 
-void fill_rect(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t colorIndex)
+void fill_rect(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t colour)
 {
     for (uint8_t i = y; i < y + h; i++)
     {
         for (uint8_t j = x; j < x + w; j++)
         {
-            drawPixel(j, i, colorIndex);
+            drawPixel(j, i, colour);
         }
     }
 }
 
 void commit_frame()
 {
-    cli(); // Lock interrupts tightly for flawless NeoPixel rendering
+    cli();
 
-    for (uint8_t i = 0; i < 64; i++)
+    for (uint8_t i = 0; i < 16; i++)
     {
-        uint8_t pixel = frameBuffer[i];
-        uint8_t r = frameBuffer[i] & 0xE0;
-        uint8_t g = (frameBuffer[i] << 3) & 0xE0;
-        uint8_t b = (frameBuffer[i] << 6) & 0xE0;
+        uint8_t pixel = frame_buffer[i];
 
-        bit_bang_byte(g >> 1); // Green
-        bit_bang_byte(r >> 1); // Red
-        bit_bang_byte(b >> 1); // Blue
+        for (int j = 0; j < 4; j++)
+        {
+            uint8_t c = (pixel >> (j * 2)) & 0x3;
+
+            uint8_t r = pallete[c][0];
+            uint8_t g = pallete[c][1];
+            uint8_t b = pallete[c][2];
+
+            bit_bang_byte(g); // Green
+            bit_bang_byte(r); // Red
+            bit_bang_byte(b); // Blue
+        }
     }
 
-    sei();          // Restore interrupts
-    _delay_us(300); // Latch command
+    sei();
+    _delay_us(300);
 }
 
 void setup_gfx()
 {
-    // Use VPORTA.DIR to toggle PA1 as an output pin safely on the 412
+    // VPORTA.DIR uses PA1
     VPORTA.DIR |= (1 << PIN_BIT);
-    memset(frameBuffer, 0, sizeof(frameBuffer));
+    memset(frame_buffer, 0, sizeof(frame_buffer));
+    memset(pallete, 0, sizeof(pallete));
 }
